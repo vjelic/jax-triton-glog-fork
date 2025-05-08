@@ -111,9 +111,9 @@ def relu(x):
 
 def matmul(a, b, activation=None):
   """Performs a Triton matmul."""
-  block_size_m = 128
-  block_size_n = 256
-  block_size_k = 32
+  block_size_m = 64
+  block_size_n = 32
+  block_size_k = 16
   group_size_m = 8
   m, k = a.shape
   _, n = b.shape
