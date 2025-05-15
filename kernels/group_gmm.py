@@ -16,24 +16,29 @@
 # Python standard library
 import argparse
 import typing
-
-# Triton
-import triton
-import triton.language as tl
+import math
 
 # JAX
 import jax
 import jax.numpy as jnp
 import jax_triton as jt
 
+#common func
+from common import (
+    generate_inputs,
+    get_num_cores,
+    ragged_dot_reference,
+    TRANS_LHS,
+    TRANS_RHS,
+    TRANS_OUT,
+    TILING,
+)
+
 # GMM kernel
 from gmm_kernel import triton_gmm_kernel_core
 
 # pytest
 import pytest
-
-# TODO: Figure out a sensible tiling default.
-TILING: tuple[int, int, int] = (32, 32, 32)
 
 # Parameter checking functions.
 # ------------------------------------------------------------------------------
@@ -73,13 +78,59 @@ def shape_from_input(
     return M, K, N, G
 
 
+###########################################################################
+
 def is_power_of_2(x: int) -> bool:
     return (x > 0) and (x & (x - 1) == 0)
 
+def next_power_of_2(n: int) -> int:
+    if n < 1:
+        raise ValueError("n must be >= 1")
+    return 2 ** math.ceil(math.log2(n))
 
-def check_tiling(tiling: tuple[int, int, int]) -> tuple[int, int, int]:
+
+def get_tiling(
+    M: int,
+    K: int,
+    N: int,
+    tiling: tuple[int, int, int]
+    ) -> tuple[int, int, int]:
+    
+    """
+    Compute and validate the tile sizes for a GEMM‑style operation, clamped to the next power‑of‑2.
+
+    Given desired maximum tile dimensions in `tiling`, this function picks the minimum of each
+    desired size and the next power‑of‑2 of the corresponding matrix dimension, then ensures
+    each resulting tile size is itself a power of 2.
+
+    Args:
+        M (int): Number of rows in the left-hand matrix; must be > 0.
+        K (int): Shared inner dimension (cols of lhs / rows of rhs); must be > 0.
+        N (int): Number of columns in the right-hand matrix; must be > 0.
+        tiling (tuple[int, int, int]): Desired (max) tile sizes for the M, K, and N dimensions.
+
+    Returns:
+        tuple[int, int, int]: A triple `(block_size_m, block_size_k, block_size_n)` where
+            each block size is the minimum of the provided tiling and the next power of two
+            of the corresponding dimension, and is guaranteed to be a power of two.
+
+    Raises:
+        AssertionError: If any of `M`, `K`, or `N` is non‑positive, if `tiling` does not have
+            exactly three elements, or if any computed block size is not a power of two.
+    """
+
+    assert M > 0, f"Number of lhs rows M must be positive (M = {M})."
+    assert K > 0, f"Number of lhs columns / rhs rows K must be positive (K = {K})."
+    assert N > 0, f"Number of rhs columns N must be positive (N = {N})."
     assert len(tiling) == 3, f"tiling must have 3 dimensions (it's = {len(tiling)})."
+
     block_size_m, block_size_k, block_size_n = tiling
+
+    # Pick smaller block sizes for toy shapes.
+    block_size_m = min(next_power_of_2(M), block_size_m)
+    block_size_k = min(next_power_of_2(K), block_size_k)
+    block_size_n = min(next_power_of_2(N), block_size_n)
+    
     assert is_power_of_2(
         block_size_m
     ), f"M-dimension tile size must be a power of 2 (it's {block_size_m})."
@@ -89,11 +140,11 @@ def check_tiling(tiling: tuple[int, int, int]) -> tuple[int, int, int]:
     assert is_power_of_2(
         block_size_n
     ), f"N-dimension tile size must be a power of 2 (it's {block_size_n})."
-    return tiling
+
+    return block_size_m, block_size_k, block_size_n
 
 
-
-
+################################################################################################
 
 def num_gpus() -> int:
     devices = jax.devices()
@@ -102,6 +153,8 @@ def num_gpus() -> int:
     print("Number of GPUs:", num_gpus)
     return num_gpus
 
+def cdiv(n, d):
+    return (n + d - 1) // d
 
 def compute_grid(
     N: int,
@@ -119,38 +172,42 @@ def compute_grid(
     assert bool(jnp.all(group_sizes >= 0)), "All group_sizes must be non-negative."
     num_m_tiles = (group_sizes + block_size_m - 1) // block_size_m
     assert bool(jnp.all(num_m_tiles >= 0)), "All num_m_tiles must be non-negative."
-    num_n_tiles = triton.cdiv(N, block_size_n)
+    num_n_tiles = cdiv(N, block_size_n)
     assert num_n_tiles > 0, f"num_n_tiles must be positive, it's {num_n_tiles}."
     num_tiles = int(jnp.sum(num_m_tiles * num_n_tiles))
     assert num_tiles > 0, f"num_tiles must be positive, it's {num_tiles}."
-    num_programs = int(min(num_gpus(), num_tiles))
+    num_programs = int(min(get_num_cores(), num_tiles))
     assert num_programs > 0, f"num_programs must be positive, it's {num_programs}."
+    print(f"num_programs={num_programs}")
     return (num_programs,)
 
 ### adding jax-triton wrapper for group_gemm kernel ###
 
 def group_gemm(lhs: jnp.ndarray,
                rhs: jnp.ndarray,
-               group_sizes,
+               group_sizes: jnp.ndarray,
                tiling: tuple[int, int, int] = TILING,
                preferred_element_type: jnp.dtype = jnp.bfloat16,
-               existing_out: jnp.ndarray | None = None,
                debug: bool = False, 
     ) -> jnp.ndarray:
 
     #check_input_device_dtype(lhs, rhs, group_sizes)
-    m, k, n, g = shape_from_input(lhs, rhs, group_sizes)
-    block_size_m, block_size_k, block_size_n = check_tiling(tiling)
-    out_shape = jax.ShapeDtypeStruct(shape=(m, n), dtype=lhs.dtype)    
-    out_ = jnp.zeros((m, n), dtype=preferred_element_type)
+    m, k, n, g = shape_from_input(lhs, rhs, group_sizes) #TODO need to check with transpose case..
 
+    block_size_m, block_size_k, block_size_n = get_tiling(m,k,n,tiling)
+
+    out_shape = jax.ShapeDtypeStruct(shape=(m, n), dtype=preferred_element_type)    
+   
     grid = compute_grid(n, block_size_m, block_size_n, group_sizes)
+    is_k_divisible_by_block_k = (k%block_size_k)==0 
+    print(f"is_k_divisible_by_block_k={is_k_divisible_by_block_k}")
+
+    group_size_m=1 # would come from a Lookup Table. [key-value store]: optimization uses
     
-    return jt.triton_call(
+    return  jt.triton_call(
         lhs,
         rhs,
         group_sizes,
-        out_,
         kernel=triton_gmm_kernel_core,
         out_shape=out_shape,
         grid=grid,
@@ -173,37 +230,7 @@ def group_gemm(lhs: jnp.ndarray,
         BLOCK_SIZE_M=block_size_m,
         BLOCK_SIZE_K=block_size_k,
         BLOCK_SIZE_N=block_size_n,
-        K_DIVISIBLE_BY_BLOCK_SIZE_K=1,
+        K_DIVISIBLE_BY_BLOCK_SIZE_K=is_k_divisible_by_block_k,
+        GROUP_SIZE_M=group_size_m,
         debug=debug
     )
-
-
-
-
-def main(unused_argv):
-
-    preferred_element_type=jnp.bfloat16
-
-    group_sizes = jnp.array([32, 64, 128, 32, 64, 64, 64, 64], dtype=jnp.int32)
-    g=group_sizes.shape[0]
-    k1, k2 = jax.random.split(jax.random.PRNGKey(0))
-    lhs = jax.random.normal(k1, (512, 512), dtype=preferred_element_type)
-    rhs = jax.random.normal(k2, (g, 512, 512), dtype=preferred_element_type)
-
-    tiling=TILING
-    
-
-    out_grp_gemm = group_gemm(lhs, rhs, group_sizes, tiling, preferred_element_type, debug=False)
-    out_ragged = jax.lax.ragged_dot(lhs, rhs, group_sizes=group_sizes)
-
-    if not jnp.allclose(out_grp_gemm, out_ragged, 1e-3):
-        diff = jnp.abs(out_grp_gemm - out_ragged).max()
-        raise ValueError(
-            f"Mismatch between gmm and ragged_dot. Max diff={diff}\n"
-            f"out_gmm = {out_grp_gemm}\n\nout_ragged = {out_ragged}"
-        )
-
-
-if __name__ == "__main__":
-    from absl import app
-    app.run(main)
