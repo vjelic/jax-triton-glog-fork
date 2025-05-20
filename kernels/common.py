@@ -47,48 +47,73 @@ def generate_inputs(
     rhs = jax.random.normal(k2, (G, rhs_row, rhs_col), dtype=preferred_element_type)
     return lhs, rhs
 
-def num_gpus() -> int:
-    devices = jax.devices()
-    print("All devices:", devices)
-    num_gpus = sum(1 for d in devices if d.platform == "gpu")
-    print("Number of GPUs:", num_gpus)
-    return num_gpus
+def num_of_cu() -> int:
+    '''
+    int warp_size;
+    if ((status = hipDeviceGetAttribute(&warp_size,
+      hipDeviceAttributeWarpSize, dev)) != hipSuccess) {
+      return status;
+    }
+    '''
+    # JAX device and get its numeric device‐ID
+    device = jax.devices()[0]
+    dev_id = device.id
 
-def get_num_cores():
-  # 1) pick your JAX device and get its numeric device‐ID
-  #    (JAX on ROCm numbers them 0, 1, 2, …)
-  device = jax.devices()[0]
-  dev_id = device.id
+    # load the ROCm (HIP) runtime
+    hip = ctypes.cdll.LoadLibrary("libamdhip64.so")
 
-  # 2) load the ROCm (HIP) runtime, libamdhip64.so is in LD_LIBRARY_PATH
-  hip = ctypes.cdll.LoadLibrary("libamdhip64.so")
+    # enum for "multiprocessor count" in hip_runtime_api.h
+    #    – hipDeviceAttributeMultiprocessorCount == 63
+    HIP_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT = 63
 
-  # 3) the enum for "multiprocessor count" in hip_runtime_api.h
-  #    – hipDeviceAttributeMultiprocessorCount == 16
-  HIP_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT = 16
+    # 4) call hipDeviceGetAttribute
+    cu_count = ctypes.c_int()
+    err = hip.hipDeviceGetAttribute(
+        ctypes.byref(cu_count),
+        HIP_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT,
+        ctypes.c_int(dev_id),
+    )
+    if err != 0:
+        raise RuntimeError(f"HIP call failed with error code {err}")
 
-  # 4) call hipDeviceGetAttribute
-  cu_count = ctypes.c_int()
-  err = hip.hipDeviceGetAttribute(
-      ctypes.byref(cu_count),
-      HIP_DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT,
-      ctypes.c_int(dev_id),
-  )
-  if err != 0:
-      raise RuntimeError(f"HIP call failed with error code {err}")
+    print(f"Device #{dev_id} ({device.device_kind!r}):")
+    print(f"  Compute Units:        {cu_count.value}")
 
-  # 5) compute units → “cores” (stream processors)
-  #    AMD GPUs have 64 stream processors per CU
-  cores_per_cu = 64
-  total_cores = cu_count.value * cores_per_cu
-
-  print(f"Device #{dev_id} ({device.device_kind!r}):")
-  print(f"  Compute Units:        {cu_count.value}")
-  print(f"  Stream Processors:    {total_cores}")
-
-  return total_cores
+    return cu_count.value
 
 
+def get_wrap_size()-> int:
+    '''
+    int warp_size;
+    if ((status = hipDeviceGetAttribute(&warp_size,
+      hipDeviceAttributeWarpSize, dev)) != hipSuccess) {
+      return status;
+    }
+    '''
+    device = jax.devices()[0]
+    dev_id = device.id
+
+    # load the ROCm (HIP) runtime
+    hip = ctypes.cdll.LoadLibrary("libamdhip64.so")
+
+    # 3) the enum for "wrap size" in hip_runtime_api.h
+    #    – hipDeviceAttributeWrapSize = 87
+    HIP_DEVICE_ATTRIBUTE_WRAP_SIZE = 87
+
+    # 4) call hipDeviceGetAttribute
+    warp_size = ctypes.c_int()
+    err = hip.hipDeviceGetAttribute(
+        ctypes.byref(warp_size),
+        HIP_DEVICE_ATTRIBUTE_WRAP_SIZE,
+        ctypes.c_int(dev_id),
+    )
+    if err != 0:
+        raise RuntimeError(f"HIP call failed with error code {err}")
+
+    print(f"Device #{dev_id} ({device.device_kind!r}):")
+    print(f"  wrap size:        {warp_size.value}")
+
+    return warp_size.value
 
 def ragged_dot_reference(
     lhs,

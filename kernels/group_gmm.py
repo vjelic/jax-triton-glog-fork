@@ -26,7 +26,8 @@ import jax_triton as jt
 #common func
 from common import (
     generate_inputs,
-    get_num_cores,
+    num_of_cu,
+    get_wrap_size,
     ragged_dot_reference,
     TRANS_LHS,
     TRANS_RHS,
@@ -145,14 +146,6 @@ def get_tiling(
 
 
 ################################################################################################
-
-def num_gpus() -> int:
-    devices = jax.devices()
-    print("All devices:", devices)
-    num_gpus = sum(1 for d in devices if d.platform == "gpu")
-    print("Number of GPUs:", num_gpus)
-    return num_gpus
-
 def cdiv(n, d):
     return (n + d - 1) // d
 
@@ -176,7 +169,7 @@ def compute_grid(
     assert num_n_tiles > 0, f"num_n_tiles must be positive, it's {num_n_tiles}."
     num_tiles = int(jnp.sum(num_m_tiles * num_n_tiles))
     assert num_tiles > 0, f"num_tiles must be positive, it's {num_tiles}."
-    num_programs = int(min(get_num_cores(), num_tiles))
+    num_programs = int(min(num_of_cu(), num_tiles))
     assert num_programs > 0, f"num_programs must be positive, it's {num_programs}."
     print(f"num_programs={num_programs}")
     return (num_programs,)
