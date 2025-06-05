@@ -36,7 +36,7 @@ from common import (
 )
 
 # GMM kernel
-from gmm_kernel import triton_gmm_kernel_core
+from triton_gmm_kernel import triton_gmm_kernel_core
 
 # pytest
 import pytest
@@ -175,7 +175,7 @@ def compute_grid(
     return (num_programs,)
 
 ### adding jax-triton wrapper for group_gemm kernel ###
-
+#@jax.jit
 def group_gemm(lhs: jnp.ndarray,
                rhs: jnp.ndarray,
                group_sizes: jnp.ndarray,
@@ -196,6 +196,7 @@ def group_gemm(lhs: jnp.ndarray,
     print(f"is_k_divisible_by_block_k={is_k_divisible_by_block_k}")
 
     group_size_m=1 # would come from a Lookup Table. [key-value store]: optimization uses
+    grid_dim = num_of_cu()
     
     return  jt.triton_call(
         lhs,
@@ -224,6 +225,7 @@ def group_gemm(lhs: jnp.ndarray,
         BLOCK_SIZE_K=block_size_k,
         BLOCK_SIZE_N=block_size_n,
         K_DIVISIBLE_BY_BLOCK_SIZE_K=is_k_divisible_by_block_k,
-        GROUP_SIZE_M=group_size_m,
+        GROUP_SIZE=group_size_m,
+        GRID_DIM=grid_dim,
         debug=debug
     )

@@ -45,7 +45,9 @@ def main(unused_argv):
         n=50
         grp_gemm_triton = func_group_gmm().block_until_ready() # warm up
         t = timeit.timeit(lambda: func_group_gmm().block_until_ready(), number=n)
-        print(f"Average over {n} runs: {t/n:.6f} s")
+        #t2 = timeit.timeit(lambda: jax_ragged_dot().block_until_ready(), number=n)
+        print(f"Average triton group gemm {n} runs: {t/n:.6f} s")
+        #print(f"Average jax_ragged_dot {n} runs: {t2/n:.6f} s")
 
     else:
 
