@@ -28,7 +28,10 @@ from common import (
     generate_inputs,
     num_of_cu,
     get_wrap_size,
+    is_power_of_2,
+    next_power_of_2,
     ragged_dot_reference,
+    get_tiling,
     TRANS_LHS,
     TRANS_RHS,
     TRANS_OUT,
@@ -80,72 +83,6 @@ def shape_from_input(
 
 
 ###########################################################################
-
-def is_power_of_2(x: int) -> bool:
-    return (x > 0) and (x & (x - 1) == 0)
-
-def next_power_of_2(n: int) -> int:
-    if n < 1:
-        raise ValueError("n must be >= 1")
-    return 2 ** math.ceil(math.log2(n))
-
-
-def get_tiling(
-    M: int,
-    K: int,
-    N: int,
-    tiling: tuple[int, int, int]
-    ) -> tuple[int, int, int]:
-    
-    """
-    Compute and validate the tile sizes for a GEMM‑style operation, clamped to the next power‑of‑2.
-
-    Given desired maximum tile dimensions in `tiling`, this function picks the minimum of each
-    desired size and the next power‑of‑2 of the corresponding matrix dimension, then ensures
-    each resulting tile size is itself a power of 2.
-
-    Args:
-        M (int): Number of rows in the left-hand matrix; must be > 0.
-        K (int): Shared inner dimension (cols of lhs / rows of rhs); must be > 0.
-        N (int): Number of columns in the right-hand matrix; must be > 0.
-        tiling (tuple[int, int, int]): Desired (max) tile sizes for the M, K, and N dimensions.
-
-    Returns:
-        tuple[int, int, int]: A triple `(block_size_m, block_size_k, block_size_n)` where
-            each block size is the minimum of the provided tiling and the next power of two
-            of the corresponding dimension, and is guaranteed to be a power of two.
-
-    Raises:
-        AssertionError: If any of `M`, `K`, or `N` is non‑positive, if `tiling` does not have
-            exactly three elements, or if any computed block size is not a power of two.
-    """
-
-    assert M > 0, f"Number of lhs rows M must be positive (M = {M})."
-    assert K > 0, f"Number of lhs columns / rhs rows K must be positive (K = {K})."
-    assert N > 0, f"Number of rhs columns N must be positive (N = {N})."
-    assert len(tiling) == 3, f"tiling must have 3 dimensions (it's = {len(tiling)})."
-
-    block_size_m, block_size_k, block_size_n = tiling
-
-    # Pick smaller block sizes for toy shapes.
-    block_size_m = min(next_power_of_2(M), block_size_m)
-    block_size_k = min(next_power_of_2(K), block_size_k)
-    block_size_n = min(next_power_of_2(N), block_size_n)
-    
-    assert is_power_of_2(
-        block_size_m
-    ), f"M-dimension tile size must be a power of 2 (it's {block_size_m})."
-    assert is_power_of_2(
-        block_size_k
-    ), f"K-dimension tile size must be a power of 2 (it's {block_size_k})."
-    assert is_power_of_2(
-        block_size_n
-    ), f"N-dimension tile size must be a power of 2 (it's {block_size_n})."
-
-    return block_size_m, block_size_k, block_size_n
-
-
-################################################################################################
 def cdiv(n, d):
     return (n + d - 1) // d
 
