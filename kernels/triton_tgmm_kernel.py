@@ -32,15 +32,8 @@ def triton_tgmm_persistent_kernel_core(
     K: int,
     N: int,
     G: int,
-    # Tensor strides:
-    stride_lhs_k: int,
-    stride_lhs_m: int,
-    stride_rhs_m: int,
-    stride_rhs_n: int,
-    stride_out_g: int,
-    stride_out_k: int,
-    stride_out_n: int,
     # Meta-parameters:
+    TRANS_LHS: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
     BLOCK_SIZE_N: tl.constexpr,
@@ -52,14 +45,6 @@ def triton_tgmm_persistent_kernel_core(
     tl.assume(N > 0)
     tl.assume(G > 0)
 
-    tl.assume(stride_lhs_m > 0)
-    tl.assume(stride_lhs_k > 0)
-    tl.assume(stride_rhs_m > 0)
-    tl.assume(stride_rhs_n > 0)
-    tl.assume(stride_out_g > 0)
-    tl.assume(stride_out_k > 0)
-    tl.assume(stride_out_n > 0)
-
     num_k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
     tl.device_assert(num_k_tiles > 0, "num_k_tiles <= 0")
 
@@ -68,14 +53,6 @@ def triton_tgmm_persistent_kernel_core(
 
     num_tiles = num_k_tiles * num_n_tiles
     tl.device_assert(num_tiles > 0, "num_tiles <= 0")
-
-    # stride_lhs_m = 1 when lhs is row-major
-    lhs_step = BLOCK_SIZE_M * stride_lhs_m
-    tl.device_assert(lhs_step > 0, "lhs_step <= 0")
-
-    # stride_rhs_m = 1 when rhs is column-major
-    rhs_step = BLOCK_SIZE_M * stride_rhs_m
-    tl.device_assert(rhs_step > 0, "rhs_step <= 0")
 
     # Current tile. Each program computes multiple tiles of each group.
     tile = tl.program_id(0)
@@ -120,21 +97,16 @@ def triton_tgmm_persistent_kernel_core(
             ) % N
             offs_m = tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
 
-            # stride_lhs_k = 1 when lhs is column-major
-            # stride_lhs_m = 1 when lhs is row-major
-            lhs_ptrs = (
-                lhs_ptr
-                + offs_lhs_k[:, None] * stride_lhs_k
-                + (last_m + offs_m[None, :]) * stride_lhs_m
-            )
+            if TRANS_LHS:
+                lhs_ptrs = (
+                    lhs_ptr + offs_lhs_k[:, None] + (last_m + offs_m[None, :]) * K
+                )
+            else:
+                lhs_ptrs = (
+                    lhs_ptr + offs_lhs_k[:, None] * M + (last_m + offs_m[None, :])
+                )
 
-            # stride_rhs_m = 1 when rhs is column-major
-            # stride_rhs_n = 1 when rhs is row-major
-            rhs_ptrs = (
-                rhs_ptr
-                + (last_m + offs_m[:, None]) * stride_rhs_m
-                + offs_rhs_n[None, :] * stride_rhs_n
-            )
+            rhs_ptrs = rhs_ptr + (last_m + offs_m[:, None]) * N + offs_rhs_n[None, :]
 
             loop_m = tl.cdiv(m, BLOCK_SIZE_M)
             m_divisible_by_block_m = m % BLOCK_SIZE_M == 0
@@ -146,9 +118,15 @@ def triton_tgmm_persistent_kernel_core(
             for _ in range(0, loop_m):
                 lhs = tl.load(lhs_ptrs)
                 rhs = tl.load(rhs_ptrs)
+
                 acc += tl.dot(lhs, rhs, input_precision="ieee")
-                lhs_ptrs += lhs_step
-                rhs_ptrs += rhs_step
+
+                if TRANS_LHS:
+                    lhs_ptrs += BLOCK_SIZE_M * K
+                else:
+                    lhs_ptrs += BLOCK_SIZE_M
+
+                rhs_ptrs += BLOCK_SIZE_M * N
 
             if not m_divisible_by_block_m:
                 offs_lhs_k = (
@@ -167,14 +145,11 @@ def triton_tgmm_persistent_kernel_core(
             offs_out_k = tile_k.to(tl.int64) * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
             offs_out_n = tile_n.to(tl.int64) * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
 
-            # stride_out_g is always K * N
-            # stride_out_k = 1 when out is column-major
-            # stride_out_n = 1 when out is row-major
             out_ptrs = (
                 out_ptr
-                + g.to(tl.int64) * stride_out_g
-                + offs_out_k[:, None] * stride_out_k
-                + offs_out_n[None, :] * stride_out_n
+                + g.to(tl.int64) * K * N
+                + offs_out_k[:, None] * N
+                + offs_out_n[None, :]
             )
 
             tl.store(
@@ -216,15 +191,8 @@ def triton_tgmm_non_persistent_kernel_core(
     K: int,
     N: int,
     G: int,
-    # Tensor strides:
-    stride_lhs_k: int,
-    stride_lhs_m: int,
-    stride_rhs_m: int,
-    stride_rhs_n: int,
-    stride_out_g: int,
-    stride_out_k: int,
-    stride_out_n: int,
     # Meta-parameters:
+    TRANS_LHS: tl.constexpr,
     BLOCK_SIZE_G: tl.constexpr,
     BLOCK_SIZE_M: tl.constexpr,
     BLOCK_SIZE_K: tl.constexpr,
@@ -235,14 +203,6 @@ def triton_tgmm_non_persistent_kernel_core(
     tl.assume(K > 0)
     tl.assume(N > 0)
     tl.assume(G > 0)
-
-    tl.assume(stride_lhs_m > 0)
-    tl.assume(stride_lhs_k > 0)
-    tl.assume(stride_rhs_m > 0)
-    tl.assume(stride_rhs_n > 0)
-    tl.assume(stride_out_g > 0)
-    tl.assume(stride_out_k > 0)
-    tl.assume(stride_out_n > 0)
 
     # Get group ID from grid.
     g = tl.program_id(0)
@@ -270,14 +230,6 @@ def triton_tgmm_non_persistent_kernel_core(
     num_n_tiles = tl.cdiv(N, BLOCK_SIZE_N)
     tl.device_assert(num_n_tiles > 0, "num_n_tiles <= 0")
 
-    # stride_lhs_m = 1 when lhs is row-major
-    lhs_step = BLOCK_SIZE_M * stride_lhs_m
-    tl.device_assert(lhs_step > 0, "lhs_step <= 0")
-
-    # stride_rhs_m = 1 when rhs is column-major
-    rhs_step = BLOCK_SIZE_M * stride_rhs_m
-    tl.device_assert(rhs_step > 0, "rhs_step <= 0")
-
     # Get MM tile from grid.
     tile_in_mm = tl.program_id(1)
     tl.device_assert(tile_in_mm >= 0, "tile_in_mm < 0")
@@ -293,21 +245,12 @@ def triton_tgmm_non_persistent_kernel_core(
     offs_rhs_n = (tile_n.to(tl.int64) * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)) % N
     offs_m = tl.arange(0, BLOCK_SIZE_M).to(tl.int64)
 
-    # stride_lhs_k = 1 when lhs is column-major
-    # stride_lhs_m = 1 when lhs is row-major
-    lhs_ptrs = (
-        lhs_ptr
-        + offs_lhs_k[:, None] * stride_lhs_k
-        + (start_m + offs_m[None, :]) * stride_lhs_m
-    )
+    if TRANS_LHS:
+        lhs_ptrs = lhs_ptr + offs_lhs_k[:, None] + (start_m + offs_m[None, :]) * K
+    else:
+        lhs_ptrs = lhs_ptr + offs_lhs_k[:, None] * M + (start_m + offs_m[None, :])
 
-    # stride_rhs_m = 1 when rhs is column-major
-    # stride_rhs_n = 1 when rhs is row-major
-    rhs_ptrs = (
-        rhs_ptr
-        + (start_m + offs_m[:, None]) * stride_rhs_m
-        + offs_rhs_n[None, :] * stride_rhs_n
-    )
+    rhs_ptrs = rhs_ptr + (start_m + offs_m[:, None]) * N + offs_rhs_n[None, :]
 
     loop_m = tl.cdiv(m, BLOCK_SIZE_M)
     m_divisible_by_block_m = m % BLOCK_SIZE_M == 0
@@ -319,9 +262,15 @@ def triton_tgmm_non_persistent_kernel_core(
     for _ in range(0, loop_m):
         lhs = tl.load(lhs_ptrs)
         rhs = tl.load(rhs_ptrs)
+
         acc += tl.dot(lhs, rhs, input_precision="ieee")
-        lhs_ptrs += lhs_step
-        rhs_ptrs += rhs_step
+
+        if TRANS_LHS:
+            lhs_ptrs += BLOCK_SIZE_M * K
+        else:
+            lhs_ptrs += BLOCK_SIZE_M
+
+        rhs_ptrs += BLOCK_SIZE_M * N
 
     if not m_divisible_by_block_m:
         offs_lhs_k = (
@@ -340,14 +289,8 @@ def triton_tgmm_non_persistent_kernel_core(
     offs_out_k = tile_k.to(tl.int64) * BLOCK_SIZE_K + tl.arange(0, BLOCK_SIZE_K)
     offs_out_n = tile_n.to(tl.int64) * BLOCK_SIZE_N + tl.arange(0, BLOCK_SIZE_N)
 
-    # stride_out_g is always K * N
-    # stride_out_k = 1 when out is column-major
-    # stride_out_n = 1 when out is row-major
     out_ptrs = (
-        out_ptr
-        + g.to(tl.int64) * stride_out_g
-        + offs_out_k[:, None] * stride_out_k
-        + offs_out_n[None, :] * stride_out_n
+        out_ptr + g.to(tl.int64) * K * N + offs_out_k[:, None] * N + offs_out_n[None, :]
     )
 
     tl.store(

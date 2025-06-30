@@ -1,7 +1,7 @@
 
 import jax
 import jax.numpy as jnp
-import group_gmm as ggmm  # adjust import to wherever you've defined group_gemm
+import gmm as backend  # adjust import to wherever you've defined gmm
 
 import functools
 import timeit
@@ -23,7 +23,7 @@ def main(unused_argv):
     precision_ = "F32_F32_F32" if preferred_element_type==jnp.float32 else "BF16_BF16_F32"
     print(f"precision_ = {precision_}")
 
-    _perf = True
+    _perf = False
     if _perf:
         M, K, N = 393216, 2048, 1408
         group_sizes = jnp.array([49152,65536,32768,34816,63488,49152,32768,65536], dtype=jnp.int32)    
@@ -37,7 +37,7 @@ def main(unused_argv):
 
     print(f"lhs shape={lhs.shape}, rhs shape={rhs.shape}, preferred_element_type={preferred_element_type}")
 
-    func_group_gmm = functools.partial(ggmm.group_gemm, lhs, rhs, group_sizes, tiling, preferred_element_type, False,)
+    func_group_gmm = functools.partial(backend.gmm, lhs, rhs, group_sizes, tiling, preferred_element_type, False,)
     jax_ragged_dot = functools.partial(jax.lax.ragged_dot, lhs, rhs, group_sizes=group_sizes,precision=precision_, )
 
     if _perf:
@@ -60,7 +60,7 @@ def main(unused_argv):
             diff = jnp.abs(ragged_dot - ragged_dot_ref).max()
             print(f"\nWARNING: ragged_dot and ragged_dot_ref result mismatch; Max-diff={diff}\n")
         else:
-            print("\nWARNING: ragged_dot & ragged_dot_ref results matched\n")
+            print("Test passed: ragged_dot & ragged_dot_ref results matched\n")
 
         if not jnp.allclose(ragged_dot_ref, grp_gemm_triton, atol):
             diff = jnp.abs(ragged_dot_ref - grp_gemm_triton).max()
@@ -69,7 +69,7 @@ def main(unused_argv):
                 f" grp_gemm_triton  = {grp_gemm_triton}\n\n ragged_dot_ref = {ragged_dot_ref}"
                 )
         else:
-            print("grp_gemm_triton & ragged_dot_ref results matched")
+            print("Test passed: grp_gemm_triton & ragged_dot_ref results matched")
     
 
 

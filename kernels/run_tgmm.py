@@ -1,7 +1,7 @@
 
 import jax
 import jax.numpy as jnp
-import group_tgmm as tgmm  # adjust import to wherever you've defined group_gemm
+import tgmm as backend  # adjust import to wherever you've defined tgmm
 
 import functools
 import timeit
@@ -37,21 +37,20 @@ def main(unused_argv):
 
     print(f"lhs shape={lhs.shape}, rhs shape={rhs.shape}, preferred_element_type={preferred_element_type}")
 
-    func_group_gmm = functools.partial(tgmm.triton_persistent_tgmm, lhs, rhs, group_sizes, preferred_element_type,tiling, False,)
-    
+    tgmm_func = functools.partial(backend.triton_persistent_tgmm, lhs, rhs, group_sizes, preferred_element_type,tiling, False,)
 
     if _perf:
 
         n=5
-        grp_gemm_triton = func_group_gmm().block_until_ready() # warm up
-        t = timeit.timeit(lambda: func_group_gmm().block_until_ready(), number=n)
+        grp_gemm_triton = tgmm_func().block_until_ready() # warm up
+        t = timeit.timeit(lambda: tgmm_func().block_until_ready(), number=n)
         #t2 = timeit.timeit(lambda: jax_ragged_dot().block_until_ready(), number=n)
         print(f"Average triton group gemm {n} runs: {t/n:.6f} s")
         #print(f"Average jax_ragged_dot {n} runs: {t2/n:.6f} s")
 
     else:
 
-        grp_gemm_triton = func_group_gmm().block_until_ready()
+        grp_gemm_triton = tgmm_func().block_until_ready()
         
         '''
         ragged_dot      = jax.lax.ragged_dot(lhs, rhs, group_sizes=group_sizes,precision=precision_).block_until_ready()

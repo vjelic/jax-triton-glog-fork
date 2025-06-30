@@ -1,7 +1,7 @@
 
 import jax
 import jax.numpy as jnp
-import group_gmm as ggmm  # adjust import to wherever you've defined group_gemm
+import gmm as backend  # adjust import to wherever you've defined gmm
 import jax_triton as jt
 
 from absl.testing import absltest, parameterized
@@ -41,8 +41,8 @@ class GroupGemmTest(parameterized.TestCase):
 
     lhs, rhs = generate_inputs(M, K, N, G,  preferred_element_type=dtype, trans_lhs=False, trans_rhs=False)
 
-    # run group_gemm
-    out = ggmm.group_gemm(lhs=lhs, rhs=rhs, group_sizes=group_sizes, tiling=tiling, preferred_element_type=dtype, debug=False)
+    # run gmm
+    out = backend.gmm(lhs=lhs, rhs=rhs, group_sizes=group_sizes, tiling=tiling, preferred_element_type=dtype, debug=False)
     out.block_until_ready()
     
     # expected via JAX ragged_dot

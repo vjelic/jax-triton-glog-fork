@@ -3,13 +3,13 @@
 """Grouped matrix multiplication operations with custom VJPs."""
 
 import jax
-import group_gmm as backend
-import group_tgmm as backend_tgmm
+import gmm as backend
+import tgmm as backend_tgmm
 import jax.numpy as jnp
 
 
 gmm = jax.custom_vjp(
-    backend.group_gemm,
+    backend.gmm,
     nondiff_argnums=(3, 4, 5),
 )
 
@@ -33,7 +33,7 @@ def _gmm_fwd(
             ],
     ]:
   """Forward function for GMM VJP."""
-  out = backend.group_gemm(
+  out = backend.gmm(
       lhs,
       rhs,
       group_sizes,
@@ -47,23 +47,22 @@ def _gmm_fwd(
 def _gmm_bwd(
         residual: tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray, tuple[int, int, int], jnp.dtype, bool,],
         grad: jnp.ndarray,
-    ) -> tuple[jnp.ndarray, jnp.ndarray, None, None, None]:
+    ) -> tuple[jnp.ndarray, jnp.ndarray, None, None, jnp.ndarray]:
 
     """Backward function for throughput GMM VJP.""" 
 
     lhs, rhs, group_sizes, tiling, preferred_element_type, debug = residual
 
-    grad_lhs = backend.group_gemm(
+    grad_lhs = backend.gmm(
                                     grad,
                                     rhs,
                                     group_sizes,
                                     tiling,
-                                    preferred_element_type, 
-                                    debug
+                                    preferred_element_type
                                     )
 
     grad_rhs = backend_tgmm.triton_persistent_tgmm(
-                                    lhs.swapaxes(0, 1),
+                                    lhs,
                                     grad,
                                     group_sizes,
                                     tiling,
@@ -78,8 +77,8 @@ def _gmm_bwd(
     # return the transpose of the rhs gradient that we calculated above.
     #
     # TODO(tgale, enriqueps, apaske): Fuse this transposition into the tgmm.
-    # = grad_rhs.swapaxes(1, 2) if transpose_rhs else grad_rhs
-    return grad_lhs, grad_rhs, None, None, None
+    # grad_rhs = grad_rhs.swapaxes(1, 2) if transpose_rhs else grad_rhs
+    return grad_lhs, grad_rhs, None, None, grad
 
 
 gmm.defvjp(_gmm_fwd, _gmm_bwd)

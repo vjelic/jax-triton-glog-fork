@@ -1,6 +1,4 @@
 # Python standard library
-import argparse
-import typing
 import math
 
 # JAX
@@ -107,9 +105,7 @@ def triton_persistent_tgmm(
 ) -> jnp.ndarray:
 
     m, k, n, g = get_tgmm_shape(lhs, rhs, group_sizes)
-
     block_size_m, block_size_k, block_size_n = get_tiling(m,k,n,tiling)
-
    
     shape = (g, n, k) if trans_out else (g, k, n)
     out_shape = jax.ShapeDtypeStruct(shape, dtype=preferred_element_type)
@@ -117,95 +113,40 @@ def triton_persistent_tgmm(
     group_size_m=1 # would come from a Lookup Table. [key-value store]: optimization uses
     grid_dim = num_of_cu()    
 
-    if not autotune:
+    print("Running non autotuned persistent TGMM kernel.")
+    #trans_lhs, trans_rhs, trans_out, _, _, _ = get_tgmm_transposition(lhs, rhs, out)
+    trans_lhs=False
 
-        print("Running non autotuned persistent TGMM kernel.")
+    grid = compute_persistent_grid(
+        k,
+        n,
+        g,
+        block_size_k,
+        block_size_n,
+        grid_dim,
+    )
 
-        #trans_lhs, trans_rhs, trans_out, _, _, _ = get_tgmm_transposition(lhs, rhs, out)
-
-        grid = compute_persistent_grid(
-            k,
-            n,
-            g,
-            block_size_k,
-            block_size_n,
-            grid_dim,
-        )
-
-           
-
-        return  jt.triton_call(
-            lhs,
-            rhs,
-            group_sizes,
-            kernel=triton_tgmm_persistent_kernel_core,
-            out_shape=out_shape,
-            grid=grid,
-            num_warps=8,
-            num_stages=2,
-            #  shapes:
-            M=m,
-            K=k,
-            N=n,
-            G=g,
-            #  strides:
-            stride_lhs_k=m,
-            stride_lhs_m=1,
-            stride_rhs_m=n,
-            stride_rhs_n=1,
-            stride_out_g=k*n,
-            stride_out_k=n,
-            stride_out_n=1,
-            # Meta-parameters:
-            BLOCK_SIZE_M=block_size_m,
-            BLOCK_SIZE_K=block_size_k,
-            BLOCK_SIZE_N=block_size_n,
-            GROUP_SIZE=group_size_m,
-            GRID_DIM=grid_dim,
-            debug=debug
-        )
-        # fmt: on
-
-    else:
-        print("Running autotuned persistent TGMM kernel.")
-
-        autotuned_grid = lambda META: compute_persistent_grid(
-            k,
-            n,
-            g,
-            META["BLOCK_SIZE_K"],
-            META["BLOCK_SIZE_N"],
-            META["GRID_DIM"],
-        )
-
-
-        return  jt.triton_call(
-            lhs,
-            rhs,
-            group_sizes,
-            kernel=triton_tgmm_persistent_kernel_core,
-            out_shape=out_shape,
-            grid=autotuned_grid,
-            num_warps=8,
-            num_stages=2,
-            #  shapes:
-            M=m,
-            K=k,
-            N=n,
-            G=g,
-            #  strides:
-            stride_lhs_k=m,
-            stride_lhs_m=1,
-            stride_rhs_m=n,
-            stride_rhs_n=1,
-            stride_out_g=k*n,
-            stride_out_k=n,
-            stride_out_n=1,
-            # Meta-parameters:
-            BLOCK_SIZE_M=block_size_m,
-            BLOCK_SIZE_K=block_size_k,
-            BLOCK_SIZE_N=block_size_n,
-            GROUP_SIZE=group_size_m,
-            GRID_DIM=grid_dim,
-            debug=debug
-        )
+    return  jt.triton_call(
+        lhs,
+        rhs,
+        group_sizes,
+        kernel=triton_tgmm_persistent_kernel_core,
+        out_shape=out_shape,
+        grid=grid,
+        num_warps=8,
+        num_stages=2,
+        #  shapes:
+        M=m,
+        K=k,
+        N=n,
+        G=g,
+        # Meta-parameters:
+        TRANS_LHS=trans_lhs,
+        BLOCK_SIZE_M=block_size_m,
+        BLOCK_SIZE_K=block_size_k,
+        BLOCK_SIZE_N=block_size_n,
+        GROUP_SIZE=group_size_m,
+        GRID_DIM=grid_dim,
+        debug=debug
+    )
+        

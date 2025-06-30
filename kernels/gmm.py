@@ -111,9 +111,9 @@ def compute_grid(
     print(f"num_programs={num_programs}")
     return (num_programs,)
 
-### adding jax-triton wrapper for group_gemm kernel ###
+### adding jax-triton wrapper for gemm kernel ###
 #@jax.jit
-def group_gemm(lhs: jnp.ndarray,
+def gmm(lhs: jnp.ndarray,
                rhs: jnp.ndarray,
                group_sizes: jnp.ndarray,
                tiling: tuple[int, int, int] = TILING,
@@ -134,6 +134,8 @@ def group_gemm(lhs: jnp.ndarray,
 
     group_size_m=1 # would come from a Lookup Table. [key-value store]: optimization uses
     grid_dim = num_of_cu()
+
+    rhs_tranpose=False
     
     return  jt.triton_call(
         lhs,
@@ -149,15 +151,8 @@ def group_gemm(lhs: jnp.ndarray,
         K=k,
         N=n,
         G=g,
-        #  strides:
-        stride_lhs_m=k,
-        stride_lhs_k=1,
-        stride_rhs_g=k*n,
-        stride_rhs_k=n,
-        stride_rhs_n=1,
-        stride_out_m=n,
-        stride_out_n=1,
         # Meta-parameters:
+        TRANS_RHS=rhs_tranpose,
         BLOCK_SIZE_M=block_size_m,
         BLOCK_SIZE_K=block_size_k,
         BLOCK_SIZE_N=block_size_n,
