@@ -7,7 +7,6 @@ import jax.numpy as jnp
 import jax_triton as jt
 import triton
 import triton.language as tl
-from triton.runtime import driver
 
 
 @triton.jit
