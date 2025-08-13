@@ -11,8 +11,8 @@ import triton.language as tl
 
 @triton.jit
 def softmax_kernel(input_ptr, output_ptr,
-                   input_row_stride, output_row_stride, 
-                   n_rows, n_cols, 
+                   input_row_stride, output_row_stride,
+                   n_rows, n_cols,
                    BLOCK_SIZE: tl.constexpr):
     # starting row of the program
     row_start = tl.program_id(0)
